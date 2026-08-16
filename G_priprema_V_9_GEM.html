@@ -350,6 +350,13 @@
     <label for="napSlobodno">Dodatna napomena (slobodan upis)</label>
     <input type="text" id="napSlobodno" placeholder="npr. dodaj primjer iz svakodnevnog života, uključi debate metodu...">
     <div class="napomena">Ako ništa ne označiš niti upišeš, generisaće se standardna priprema prema urneku.</div>
+
+    <details style="margin-top:14px;">
+      <summary style="cursor:pointer; font-size:13px; font-weight:600; color:var(--plava);">Imaš JSON fajl prethodno sačuvane pripreme? Učitaj ga ovdje</summary>
+      <label for="fajlPriprema">JSON fajl prethodno izvezene pripreme (dugme "💾 JSON")</label>
+      <input type="file" id="fajlPriprema" accept=".json" onchange="ucitajPripremuIzFajla(event)">
+      <div class="napomena">Vraća prethodno generisanu pripremu na ekran - korisno ako je izgubljena iz browsera (npr. obrisan keš, drugi uređaj) a imaš sačuvan JSON fajl.</div>
+    </details>
   </div>
 
   <div class="dugmad">
@@ -360,7 +367,7 @@
     <button id="izvezNivoi" onclick="otvoriNivoeZnanja()" style="display:none; background:#e8edf5; color:var(--plava);">📖 Lekcija</button>
     <button id="provjeraCinjenica" onclick="provjeriCinjenice()" style="display:none;">🔍 Provjeri</button>
     <button id="izvezJson" onclick="izvezJsonRezerva()" style="display:none; background:#eef1f6; color:#556;">💾 JSON</button>
-    <button id="obrisi" onclick="obrisiPripremu()" style="display:none; background:linear-gradient(135deg, #2f6bb5 0%, #1e4d8b 100%); color:#fff;">🆕 Nova priprema</button>
+    <button id="obrisi" onclick="obrisiPripremu()" style="display:none; background:linear-gradient(135deg, #2f6bb5 0%, #1e4d8b 100%); color:#fff;">🆕 Nova</button>
     <button id="pitajAI" onclick="pitajAI()">🤖 Proširi</button>
   </div>
   <div id="status"></div>
@@ -1241,6 +1248,55 @@ function izgradiPodatkeZaNivoe() {
     sadrzajHtml: el('rezultat').innerHTML,
     sadrzajTekst: el('rezultat').innerText
   };
+}
+
+function ucitajPripremuIzFajla(evt) {
+  const file = evt.target.files && evt.target.files[0];
+  const status = el('status');
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const podaci = JSON.parse(reader.result);
+      if (!podaci.sadrzajHtml && !podaci.sadrzajTekst) {
+        throw new Error('Fajl ne sadrži pripremu časa (nedostaje sadržaj).');
+      }
+
+      if (podaci.predmet) el('predmet').value = podaci.predmet;
+      if (podaci.razred) el('razred').value = podaci.razred;
+      if (podaci.tema) el('tema').value = podaci.tema;
+      if (podaci.jedinica) el('jedinica').value = podaci.jedinica;
+      if (podaci.tipCasa) el('tipCasa').value = podaci.tipCasa;
+
+      el('rezultat').innerHTML = podaci.sadrzajHtml || ('<p>' + (podaci.sadrzajTekst || '') + '</p>');
+      el('rezultat-wrap').style.display = 'block';
+      el('izvezWord').style.display = 'inline-block';
+      el('izvezi').style.display = 'inline-block';
+      el('izvezNivoi').style.display = 'inline-block';
+      el('izvezJson').style.display = 'inline-block';
+      el('provjeraCinjenica').style.display = 'inline-block';
+      el('obrisi').style.display = 'inline-block';
+
+      try {
+        localStorage.setItem(NIVOI_STORAGE_KLJUC, JSON.stringify(podaci));
+      } catch (err) {
+        console.warn('Nije uspjelo automatsko čuvanje za app Lekcija:', err);
+      }
+
+      status.className = 'ok';
+      status.textContent = 'Priprema je vraćena iz fajla.';
+      el('rezultat-wrap').scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+      status.className = 'err';
+      status.textContent = 'Greška pri čitanju fajla: ' + err.message;
+    }
+  };
+  reader.onerror = () => {
+    status.className = 'err';
+    status.textContent = 'Fajl se nije mogao pročitati.';
+  };
+  reader.readAsText(file, 'UTF-8');
 }
 
 function sacuvajZaNivoe() {
