@@ -1099,8 +1099,8 @@ async function dobijIliKreirajFolder(accessToken) {
 
 async function otpremiNaDrive(accessToken, blob, naziv, folderId) {
   const metapodaci = {
-    name: naziv,
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    name: naziv.replace(/\.docx$/i, ''),
+    mimeType: 'application/vnd.google-apps.document'
   };
   if (folderId) metapodaci.parents = [folderId];
 
