@@ -250,6 +250,7 @@
     #rezultat { padding: 20px 18px; }
   }
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -364,6 +365,7 @@
     <button id="nastavi" onclick="nastaviGenerisanje()" style="display:none; background:#c77b00; color:#fff;">↻ Nastavi</button>
     <button id="izvezWord" onclick="izvezUWord()">💾 Word</button>
     <button id="izvezi" onclick="window.print()">📤 PDF</button>
+    <button id="sacuvajDrive" onclick="sacuvajNaDrive()" style="display:none; background:#e8edf5; color:var(--plava);">☁️ Google Drive</button>
     <button id="izvezNivoi" onclick="otvoriNivoeZnanja()" style="display:none; background:#e8edf5; color:var(--plava);">📖 Lekcija</button>
     <button id="provjeraCinjenica" onclick="provjeriCinjenice()" style="display:none;">🔍 Provjeri</button>
     <button id="izvezJson" onclick="izvezJsonRezerva()" style="display:none; background:#eef1f6; color:#556;">💾 JSON</button>
@@ -644,6 +646,7 @@ async function generisiPripremu() {
   status.textContent = '';
   el('izvezWord').style.display = 'none';
   el('izvezi').style.display = 'none';
+  el('sacuvajDrive').style.display = 'none';
   el('nastavi').style.display = 'none';
   el('rezultat-wrap').style.display = 'none';
   el('provjeraCinjenica').style.display = 'none';
@@ -662,6 +665,7 @@ async function generisiPripremu() {
     el('rezultat-wrap').style.display = 'block';
     el('izvezWord').style.display = 'inline-block';
     el('izvezi').style.display = 'inline-block';
+    el('sacuvajDrive').style.display = 'inline-block';
     el('izvezNivoi').style.display = 'inline-block';
     el('izvezJson').style.display = 'inline-block';
     el('provjeraCinjenica').style.display = 'inline-block';
@@ -1138,6 +1142,34 @@ function nazivFajla() {
   return 'Priprema_' + osnova + '.docx';
 }
 
+async function generisiDocxBlob() {
+  if (typeof JSZip === 'undefined') {
+    throw new Error('Biblioteka za izvoz u Word nije učitana (provjeri internet konekciju).');
+  }
+
+  const tijeloXml = htmlUDocxTijelo(el('rezultat'));
+
+  const documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:body>' + tijeloXml +
+    '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>' +
+    '<w:pgMar w:top="1417" w:right="1417" w:bottom="1417" w:left="1417" w:header="708" w:footer="708" w:gutter="0"/>' +
+    '</w:sectPr></w:body></w:document>';
+
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', DOCX_CONTENT_TYPES);
+  zip.folder('_rels').file('.rels', DOCX_RELS);
+  zip.folder('word').file('document.xml', documentXml);
+  zip.folder('word').file('styles.xml', DOCX_STYLES);
+  zip.folder('word').file('numbering.xml', DOCX_NUMBERING);
+  zip.folder('word/_rels').file('document.xml.rels', DOCX_DOCUMENT_RELS);
+
+  return await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
+}
+
 async function izvezUWord() {
   const status = el('status');
   const btn = el('izvezWord');
@@ -1155,27 +1187,7 @@ async function izvezUWord() {
   status.textContent = '';
 
   try {
-    const tijeloXml = htmlUDocxTijelo(el('rezultat'));
-
-    const documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-      '<w:body>' + tijeloXml +
-      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>' +
-      '<w:pgMar w:top="1417" w:right="1417" w:bottom="1417" w:left="1417" w:header="708" w:footer="708" w:gutter="0"/>' +
-      '</w:sectPr></w:body></w:document>';
-
-    const zip = new JSZip();
-    zip.file('[Content_Types].xml', DOCX_CONTENT_TYPES);
-    zip.folder('_rels').file('.rels', DOCX_RELS);
-    zip.folder('word').file('document.xml', documentXml);
-    zip.folder('word').file('styles.xml', DOCX_STYLES);
-    zip.folder('word').file('numbering.xml', DOCX_NUMBERING);
-    zip.folder('word/_rels').file('document.xml.rels', DOCX_DOCUMENT_RELS);
-
-    const blob = await zip.generateAsync({
-      type: 'blob',
-      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    });
+    const blob = await generisiDocxBlob();
 
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1190,6 +1202,121 @@ async function izvezUWord() {
   } catch (err) {
     status.className = 'err';
     status.textContent = 'Greška pri izvozu u Word: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
+  }
+}
+
+// ---------- Google Drive integracija ----------
+const GOOGLE_CLIENT_ID = '935442803882-n4s5i7n3nf0mnpj3i033sjsrrb3ia088.apps.googleusercontent.com';
+const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+let googleAccessToken = null;
+let googleTokenClient = null;
+
+function dobijGoogleTokenClient() {
+  if (!googleTokenClient) {
+    if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+      throw new Error('Google prijava se nije učitala (provjeri internet konekciju i pokušaj ponovo).');
+    }
+    googleTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: GOOGLE_DRIVE_SCOPE,
+      callback: () => {} // postavlja se dinamički prilikom svakog poziva
+    });
+  }
+  return googleTokenClient;
+}
+
+function zatraziGoogleToken() {
+  return new Promise((resolve, reject) => {
+    try {
+      const client = dobijGoogleTokenClient();
+      client.callback = (resp) => {
+        if (resp && resp.access_token) {
+          googleAccessToken = resp.access_token;
+          resolve(resp.access_token);
+        } else {
+          reject(new Error('Prijava na Google nalog nije uspjela.'));
+        }
+      };
+      client.error_callback = (err) => {
+        reject(new Error('Prijava na Google nalog je otkazana ili neuspješna.'));
+      };
+      client.requestAccessToken({ prompt: googleAccessToken ? '' : 'consent' });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function otpremiNaDrive(accessToken, blob, naziv) {
+  const metapodaci = {
+    name: naziv,
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  };
+
+  const forma = new FormData();
+  forma.append('metadata', new Blob([JSON.stringify(metapodaci)], { type: 'application/json' }));
+  forma.append('file', blob);
+
+  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + accessToken },
+    body: forma
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      // token istekao/nevažeći - resetuj pa neka korisnik pokuša ponovo (tražiće se nova prijava)
+      googleAccessToken = null;
+    }
+    const errText = await response.text();
+    throw new Error('Google Drive greška (' + response.status + '): ' + errText.slice(0, 300));
+  }
+
+  return await response.json();
+}
+
+async function sacuvajNaDrive() {
+  const status = el('status');
+  const btn = el('sacuvajDrive');
+  const originalHtml = btn.innerHTML;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Povezujem se sa Google nalogom...';
+  status.className = '';
+  status.textContent = '';
+
+  try {
+    const blob = await generisiDocxBlob();
+    const naziv = nazivFajla();
+
+    const token = await zatraziGoogleToken();
+
+    btn.innerHTML = '<span class="spinner"></span>Šaljem na Google Drive...';
+    let rezultat;
+    try {
+      rezultat = await otpremiNaDrive(token, blob, naziv);
+    } catch (err) {
+      // Ako je token istekao, pokušaj jednom ponovo sa svježom prijavom
+      if (err.message.indexOf('401') !== -1) {
+        const noviToken = await zatraziGoogleToken();
+        rezultat = await otpremiNaDrive(noviToken, blob, naziv);
+      } else {
+        throw err;
+      }
+    }
+
+    status.className = 'ok';
+    if (rezultat && rezultat.webViewLink) {
+      status.innerHTML = 'Sačuvano na Google Drive. <a href="' + rezultat.webViewLink + '" target="_blank" rel="noopener">Otvori fajl</a>';
+    } else {
+      status.textContent = 'Sačuvano na Google Drive.';
+    }
+  } catch (err) {
+    status.className = 'err';
+    status.textContent = 'Greška pri čuvanju na Google Drive: ' + err.message;
   } finally {
     btn.disabled = false;
     btn.innerHTML = originalHtml;
@@ -1273,6 +1400,7 @@ function ucitajPripremuIzFajla(evt) {
       el('rezultat-wrap').style.display = 'block';
       el('izvezWord').style.display = 'inline-block';
       el('izvezi').style.display = 'inline-block';
+      el('sacuvajDrive').style.display = 'inline-block';
       el('izvezNivoi').style.display = 'inline-block';
       el('izvezJson').style.display = 'inline-block';
       el('provjeraCinjenica').style.display = 'inline-block';
@@ -1349,6 +1477,7 @@ function obrisiPripremu() {
   el('rezultat-wrap').style.display = 'none';
   el('izvezWord').style.display = 'none';
   el('izvezi').style.display = 'none';
+  el('sacuvajDrive').style.display = 'none';
   el('izvezNivoi').style.display = 'none';
   el('izvezJson').style.display = 'none';
   el('provjeraCinjenica').style.display = 'none';
