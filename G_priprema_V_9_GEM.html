@@ -1318,6 +1318,110 @@ async function otpremiNaDrive(accessToken, blob, naziv, folderId) {
   return await response.json();
 }
 
+// ---------- Evidencija u Google Sheets ----------
+const GOOGLE_SHEET_NAZIV = 'Evidencija - AI pripreme nastave';
+const EVIDENCIJA_ZAGLAVLJE = ['Datum', 'Vrijeme', 'Predmet', 'Razred', 'Nastavna tema', 'Nastavna jedinica', 'Naziv dokumenta', 'Link'];
+
+async function dobijIliKreirajEvidencijuSheet(accessToken, folderId) {
+  const sacuvaniId = localStorage.getItem('gdrive_sheet_id');
+
+  if (sacuvaniId) {
+    const provjera = await fetch('https://www.googleapis.com/drive/v3/files/' + sacuvaniId + '?fields=id,trashed', {
+      headers: { 'Authorization': 'Bearer ' + accessToken }
+    });
+    if (provjera.ok) {
+      const podaci = await provjera.json();
+      if (!podaci.trashed) return sacuvaniId;
+    }
+    // Tabela je obrisana/nedostupna - napravi novu ispod
+    localStorage.removeItem('gdrive_sheet_id');
+  }
+
+  const kreiraj = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      properties: { title: GOOGLE_SHEET_NAZIV },
+      sheets: [{ properties: { title: 'Evidencija' } }]
+    })
+  });
+
+  if (!kreiraj.ok) {
+    const errText = await kreiraj.text();
+    throw new Error('Greška pri kreiranju tabele evidencije (' + kreiraj.status + '): ' + errText.slice(0, 300));
+  }
+
+  const noviSheet = await kreiraj.json();
+  const sheetId = noviSheet.spreadsheetId;
+
+  // Upiši red sa zaglavljem
+  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + sheetId + '/values/A1:H1?valueInputOption=RAW', {
+    method: 'PUT',
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ values: [EVIDENCIJA_ZAGLAVLJE] })
+  });
+
+  // Podebljaj zaglavlje (kozmetika - nije kritično ako ne uspije)
+  try {
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + sheetId + ':batchUpdate', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        requests: [{
+          repeatCell: {
+            range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
+            cell: { userEnteredFormat: { textFormat: { bold: true } } },
+            fields: 'userEnteredFormat.textFormat.bold'
+          }
+        }]
+      })
+    });
+  } catch (err) { /* nije kritično */ }
+
+  // Premjesti tabelu u istu fasciklu kao ostali dokumenti (ako je dostupna)
+  if (folderId) {
+    try {
+      await fetch('https://www.googleapis.com/drive/v3/files/' + sheetId + '?addParents=' + folderId, {
+        method: 'PATCH',
+        headers: { 'Authorization': 'Bearer ' + accessToken }
+      });
+    } catch (err) { /* nije kritično */ }
+  }
+
+  localStorage.setItem('gdrive_sheet_id', sheetId);
+  return sheetId;
+}
+
+async function dodajRedUEvidenciju(accessToken, sheetId, red) {
+  const response = await fetch(
+    'https://sheets.googleapis.com/v4/spreadsheets/' + sheetId + '/values/A:H:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS',
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ values: [red] })
+    }
+  );
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error('Greška pri upisu u evidenciju (' + response.status + '): ' + errText.slice(0, 300));
+  }
+
+  return await response.json();
+}
+
 async function sacuvajNaDrive() {
   const status = el('status');
   const btn = el('sacuvajDrive');
@@ -1332,37 +1436,64 @@ async function sacuvajNaDrive() {
     const blob = await generisiDocxBlob();
     const naziv = nazivFajla();
 
-    const token = await zatraziGoogleToken();
+    let aktivniToken = await zatraziGoogleToken();
 
     btn.innerHTML = '<span class="spinner"></span>Pripremam fasciklu...';
-    let folderId;
+    let aktivniFolderId;
     try {
-      folderId = await dobijIliKreirajFolder(token);
+      aktivniFolderId = await dobijIliKreirajFolder(aktivniToken);
     } catch (err) {
-      folderId = null; // ako fascikla ne uspije, ide u root (bolje nego potpuni fail)
+      aktivniFolderId = null; // ako fascikla ne uspije, ide u root (bolje nego potpuni fail)
     }
 
     btn.innerHTML = '<span class="spinner"></span>Šaljem na Google Drive...';
     let rezultat;
     try {
-      rezultat = await otpremiNaDrive(token, blob, naziv, folderId);
+      rezultat = await otpremiNaDrive(aktivniToken, blob, naziv, aktivniFolderId);
     } catch (err) {
       // Ako je token istekao, pokušaj jednom ponovo sa svježom prijavom
       if (err.message.indexOf('401') !== -1) {
-        const noviToken = await zatraziGoogleToken();
-        const noviFolderId = await dobijIliKreirajFolder(noviToken).catch(() => null);
-        rezultat = await otpremiNaDrive(noviToken, blob, naziv, noviFolderId);
+        aktivniToken = await zatraziGoogleToken();
+        aktivniFolderId = await dobijIliKreirajFolder(aktivniToken).catch(() => null);
+        rezultat = await otpremiNaDrive(aktivniToken, blob, naziv, aktivniFolderId);
       } else {
         throw err;
       }
     }
 
-    status.className = 'ok';
-    if (rezultat && rezultat.webViewLink) {
-      status.innerHTML = 'Sačuvano na Google Drive (fascikla "' + GOOGLE_DRIVE_FOLDER_NAME + '"). <a href="' + rezultat.webViewLink + '" target="_blank" rel="noopener">Otvori fajl</a>';
-    } else {
-      status.textContent = 'Sačuvano na Google Drive.';
+    // Upis u evidenciju (Google Sheets) - ako ne uspije, ne kvari uspješno čuvanje dokumenta
+    let evidencijaLink = '';
+    let evidencijaGreska = '';
+    try {
+      btn.innerHTML = '<span class="spinner"></span>Upisujem u evidenciju...';
+      const sheetId = await dobijIliKreirajEvidencijuSheet(aktivniToken, aktivniFolderId);
+      const sad = new Date();
+      await dodajRedUEvidenciju(aktivniToken, sheetId, [
+        sad.toLocaleDateString('bs-BA'),
+        sad.toLocaleTimeString('bs-BA', { hour: '2-digit', minute: '2-digit' }),
+        el('predmet').value.trim(),
+        el('razred').value.trim(),
+        el('tema').value.trim(),
+        el('jedinica').value.trim(),
+        naziv.replace(/\.docx$/i, ''),
+        (rezultat && rezultat.webViewLink) || ''
+      ]);
+      evidencijaLink = 'https://docs.google.com/spreadsheets/d/' + sheetId + '/edit';
+    } catch (err) {
+      evidencijaGreska = err.message;
     }
+
+    status.className = 'ok';
+    let poruka = 'Sačuvano na Google Drive (fascikla "' + GOOGLE_DRIVE_FOLDER_NAME + '").';
+    if (rezultat && rezultat.webViewLink) {
+      poruka += ' <a href="' + rezultat.webViewLink + '" target="_blank" rel="noopener">Otvori dokument</a>';
+    }
+    if (evidencijaLink) {
+      poruka += ' &nbsp;|&nbsp; <a href="' + evidencijaLink + '" target="_blank" rel="noopener">Otvori evidenciju</a>';
+    } else if (evidencijaGreska) {
+      poruka += ' <span style="color:#b00020;">(upis u evidenciju nije uspio: ' + evidencijaGreska + ')</span>';
+    }
+    status.innerHTML = poruka;
   } catch (err) {
     status.className = 'err';
     status.textContent = 'Greška pri čuvanju na Google Drive: ' + err.message;
